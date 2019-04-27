@@ -32,6 +32,7 @@
 	let relaxed = false;
 	let width = process.browser ? window.innerWidth : 1000;
 	let checked = false;
+	let title;
 
 	$: if (typeof history !== 'undefined') {
 		const params = [];
@@ -58,11 +59,14 @@
 
 		if (gist_id) {
 			relaxed = false;
-			fetch(`gist/${gist_id}`).then(r => r.json()).then(data => {
+			fetch(`gist/${gist_id}`)
+			.then(r => r.json())
+			.then(data => {
 				gist = data;
 				const { description, files } = data;
 
 				name = description;
+				title = name;
 
 				const components = Object.keys(files)
 					.map(file => {
@@ -99,6 +103,7 @@
 					const data = await response.json();
 
 					name = data.title;
+					title = name;
 
 					const components = process_example(data.files);
 					repl.set({ components });
@@ -187,7 +192,7 @@
 </style>
 
 <svelte:head>
-	<title>REPL • Svelte</title>
+	<title>{title ? `${title} • ` : ''} REPL • Svelte</title>
 
 	<meta name="twitter:title" content="Svelte REPL">
 	<meta name="twitter:description" content="Cybernetically enhanced web apps">
