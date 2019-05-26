@@ -152,10 +152,14 @@ export default class Component {
 		this.namespace = namespaces[this.component_options.namespace] || this.component_options.namespace;
 
 		if (compile_options.customElement) {
-			this.tag = this.component_options.tag || compile_options.tag;
-			if (!this.tag) {
-				throw new Error(`Cannot compile to a custom element without specifying a tag name via options.tag or <svelte:options>`);
+			if (this.component_options.tag === undefined && compile_options.tag === undefined) {
+				const svelteOptions = ast.html.children.find(child => child.name === 'svelte:options') || { start: 0, end: 0 };
+				this.warn(svelteOptions, {
+					code: 'custom-element-no-tag',
+					message: `No custom element 'tag' option was specified. To automatically register a custom element, specify a name with a hyphen in it, e.g. <svelte:options tag="my-thing"/>. To hide this warning, use <svelte:options tag={null}/>`
+				});
 			}
+			this.tag = this.component_options.tag || compile_options.tag;
 		} else {
 			this.tag = this.name;
 		}
@@ -541,8 +545,20 @@ export default class Component {
 	}
 
 	walk_module_js() {
+		const component = this;
 		const script = this.ast.module;
 		if (!script) return;
+
+		walk(script.content, {
+			enter(node) {
+				if (node.type === 'LabeledStatement' && node.label.name === '$') {
+					component.warn(node, {
+						code: 'module-script-reactive-declaration',
+						message: '$: has no effect in a module script'
+					});
+				}
+			}
+		});
 
 		this.add_sourcemap_locations(script.content);
 
@@ -735,12 +751,19 @@ export default class Component {
 					scope = map.get(node);
 				}
 
+				if (node.type === 'LabeledStatement' && node.label.name === '$' && parent.type !== 'Program') {
+					component.warn(node, {
+						code: 'non-top-level-reactive-declaration',
+						message: '$: has no effect outside of the top-level'
+					});
+				}
+
 				if (is_reference(node, parent)) {
 					const object = get_object(node);
 					const { name } = object;
 
 					if (name[0] === '$' && !scope.has(name)) {
-						component.warn_if_undefined(object, null);
+						component.warn_if_undefined(name, object, null);
 					}
 				}
 			},
@@ -753,18 +776,34 @@ export default class Component {
 		});
 	}
 
-	invalidate(name, value = name) {
+	invalidate(name, value) {
 		const variable = this.var_lookup.get(name);
 
 		if (variable && (variable.subscribable && variable.reassigned)) {
-			return `$$subscribe_${name}(), $$invalidate('${name}', ${value})`;
+			return `$$subscribe_${name}(), $$invalidate('${name}', ${value || name})`;
 		}
 
 		if (name[0] === '$' && name[1] !== '$') {
 			return `${name.slice(1)}.set(${name})`
 		}
 
-		return `$$invalidate('${name}', ${value})`;
+		if (value) {
+			return `$$invalidate('${name}', ${value})`;
+		}
+
+		// if this is a reactive declaration, invalidate dependencies recursively
+		const deps = new Set([name]);
+
+		deps.forEach(name => {
+			const reactive_declarations = this.reactive_declarations.filter(x => x.assignees.has(name));
+			reactive_declarations.forEach(declaration => {
+				declaration.dependencies.forEach(name => {
+					deps.add(name);
+				});
+			});
+		});
+
+		return Array.from(deps).map(n => `$$invalidate('${n}', ${n})`).join(', ');
 	}
 
 	rewrite_props(get_insert: (variable: Var) => string) {
@@ -920,7 +959,7 @@ export default class Component {
 		// reference instance variables other than other
 		// hoistable functions. TODO others?
 
-		const { hoistable_nodes, var_lookup } = this;
+		const { hoistable_nodes, var_lookup, injected_reactive_declaration_vars } = this;
 
 		const top_level_function_declarations = new Map();
 
@@ -987,11 +1026,11 @@ export default class Component {
 						const { name } = flatten_reference(node);
 						const owner = scope.find_owner(name);
 
-						if (name[0] === '$' && !owner) {
+						if (node.type === 'Identifier' && injected_reactive_declaration_vars.has(name)) {
 							hoistable = false;
-						}
-
-						else if (owner === instance_scope) {
+						} else if (name[0] === '$' && !owner) {
+							hoistable = false;
+						} else if (owner === instance_scope) {
 							if (name === fn_declaration.id.name) return;
 
 							const variable = var_lookup.get(name);
@@ -1079,9 +1118,11 @@ export default class Component {
 							if (!assignee_nodes.has(identifier)) {
 								const { name } = identifier;
 								const owner = scope.find_owner(name);
+								const component_var = component.var_lookup.get(name);
+								const is_writable_or_mutated = component_var && (component_var.writable || component_var.mutated);
 								if (
 									(!owner || owner === component.instance_scope) &&
-									(name[0] === '$' || component.var_lookup.has(name) && component.var_lookup.get(name).writable)
+									(name[0] === '$' || is_writable_or_mutated)
 								) {
 									dependencies.add(name);
 								}
@@ -1167,9 +1208,7 @@ export default class Component {
 		return `ctx.${name}`;
 	}
 
-	warn_if_undefined(node, template_scope: TemplateScope) {
-		let { name } = node;
-
+	warn_if_undefined(name: string, node, template_scope: TemplateScope) {
 		if (name[0] === '$') {
 			name = name.slice(1);
 			this.has_reactive_assignments = true; // TODO does this belong here?
@@ -1232,9 +1271,9 @@ function process_component_options(component: Component, nodes) {
 						const message = `'tag' must be a string literal`;
 						const tag = get_value(attribute, code, message);
 
-						if (typeof tag !== 'string') component.error(attribute, { code, message });
+						if (typeof tag !== 'string' && tag !== null) component.error(attribute, { code, message });
 
-						if (!/^[a-zA-Z][a-zA-Z0-9]*-[a-zA-Z0-9-]+$/.test(tag)) {
+						if (tag && !/^[a-zA-Z][a-zA-Z0-9]*-[a-zA-Z0-9-]+$/.test(tag)) {
 							component.error(attribute, {
 								code: `invalid-tag-property`,
 								message: `tag name must be two or more words joined by the '-' character`

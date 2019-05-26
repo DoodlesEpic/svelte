@@ -2,12 +2,15 @@ import { isIdentifierStart, isIdentifierChar } from 'acorn';
 import full_char_code_at from './full_char_code_at';
 
 export const globals = new Set([
+	'alert',
 	'Array',
 	'Boolean',
+	'confirm',
 	'console',
 	'Date',
 	'decodeURI',
 	'decodeURIComponent',
+	'document',
 	'encodeURI',
 	'encodeURIComponent',
 	'Infinity',
@@ -24,10 +27,12 @@ export const globals = new Set([
 	'parseInt',
 	'process',
 	'Promise',
+	'prompt',
 	'RegExp',
 	'Set',
 	'String',
 	'undefined',
+	'window',
 ]);
 
 export const reserved = new Set([

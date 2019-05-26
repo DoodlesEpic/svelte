@@ -3,7 +3,7 @@ import * as path from "path";
 import * as fs from "fs";
 import { rollup } from 'rollup';
 import * as virtual from 'rollup-plugin-virtual';
-import { clear_loops } from "../../internal.js";
+import { clear_loops, set_now } from "../../internal.js";
 
 import {
 	showOutput,
@@ -75,7 +75,7 @@ describe("runtime", () => {
 			compileOptions.accessors = 'accessors' in config ? config.accessors : true;
 
 			Object.keys(require.cache)
-				.filter(x => x.endsWith(".svelte"))
+				.filter(x => x.endsWith('.svelte'))
 				.forEach(file => {
 					delete require.cache[file];
 				});
@@ -100,7 +100,7 @@ describe("runtime", () => {
 							if (raf.callback) raf.callback();
 						}
 					};
-					window.performance.now = () => raf.time;
+					set_now(() => raf.time);
 					global.requestAnimationFrame = cb => {
 						let called = false;
 						raf.callback = () => {
